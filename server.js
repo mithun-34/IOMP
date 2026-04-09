@@ -12,7 +12,8 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const FILE_TTL_MS = 30 * 60 * 1000; // auto-delete after 30 min
+const FILE_TTL_MS = 30 * 60 * 1000;
+const ROOM_TTL_MS = 30 * 60 * 1000;
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -44,11 +45,31 @@ function scheduleDelete(filePath) {
 
 // ── Room State ────────────────────────────────────────────────────────────────
 const rooms = {};
-const USER_COLORS = ['#60d394','#f4a261','#e76f51','#48cae4','#c77dff','#f9c74f','#90e0ef','#ff6b6b','#a8dadc','#ffd166'];
+const USER_COLORS = ['#60d394', '#f4a261', '#e76f51', '#48cae4', '#c77dff', '#f9c74f', '#90e0ef', '#ff6b6b', '#a8dadc', '#ffd166'];
 
 function getRoom(name) {
-  if (!rooms[name]) rooms[name] = { users: new Map(), messages: [] };
+  if (!rooms[name]) rooms[name] = { users: new Map(), messages: [], emptyTimer: null };
   return rooms[name];
+}
+
+function scheduleRoomDelete(name) {
+  const room = rooms[name];
+  if (!room) return;
+  if (room.emptyTimer) clearTimeout(room.emptyTimer);
+  room.emptyTimer = setTimeout(() => {
+    if (rooms[name] && rooms[name].users.size === 0) {
+      delete rooms[name];
+      console.log(`[Room-Delete] #${name} removed after 30min of inactivity`);
+    }
+  }, ROOM_TTL_MS);
+}
+
+function cancelRoomDelete(name) {
+  const room = rooms[name];
+  if (room?.emptyTimer) {
+    clearTimeout(room.emptyTimer);
+    room.emptyTimer = null;
+  }
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -87,9 +108,10 @@ io.on('connection', socket => {
   socket.on('join', ({ roomName, userName }) => {
     currentRoom = roomName.toLowerCase().trim();
     const room = getRoom(currentRoom);
+    cancelRoomDelete(currentRoom);
     const color = USER_COLORS[room.users.size % USER_COLORS.length];
     currentUser = {
-      name: (userName || `Anon${Math.floor(Math.random()*9000+1000)}`).slice(0,20),
+      name: (userName || `Anon${Math.floor(Math.random() * 9000 + 1000)}`).slice(0, 20),
       color, id: socket.id
     };
     room.users.set(socket.id, currentUser);
@@ -99,7 +121,7 @@ io.on('connection', socket => {
     socket.emit('history', room.messages.slice(-50));
     io.to(currentRoom).emit('room-update', { count: room.users.size, users: [...room.users.values()] });
 
-    const sys = { type:'system', text:`${currentUser.name} joined`, ts: Date.now() };
+    const sys = { type: 'system', text: `${currentUser.name} joined`, ts: Date.now() };
     room.messages.push(sys);
     io.to(currentRoom).emit('system', sys);
     console.log(`[+] ${currentUser.name} → #${currentRoom} (${room.users.size} online)`);
@@ -107,21 +129,21 @@ io.on('connection', socket => {
 
   socket.on('message', ({ text }) => {
     if (!currentRoom || !text?.trim()) return;
-    const msg = { type:'text', id:uuidv4(), text:text.trim().slice(0,2000), user:currentUser, ts:Date.now() };
+    const msg = { type: 'text', id: uuidv4(), text: text.trim().slice(0, 2000), user: currentUser, ts: Date.now() };
     getRoom(currentRoom).messages.push(msg);
     io.to(currentRoom).emit('message', msg);
   });
 
   socket.on('file-message', fileData => {
     if (!currentRoom) return;
-    const msg = { type:'file', id:uuidv4(), file:fileData, user:currentUser, ts:Date.now() };
+    const msg = { type: 'file', id: uuidv4(), file: fileData, user: currentUser, ts: Date.now() };
     getRoom(currentRoom).messages.push(msg);
     io.to(currentRoom).emit('message', msg);
   });
 
   socket.on('typing', isTyping => {
     if (currentRoom && currentUser)
-      socket.to(currentRoom).emit('typing', { user:currentUser, isTyping });
+      socket.to(currentRoom).emit('typing', { user: currentUser, isTyping });
   });
 
   socket.on('disconnect', () => {
@@ -129,11 +151,11 @@ io.on('connection', socket => {
     const room = rooms[currentRoom];
     if (!room) return;
     room.users.delete(socket.id);
-    const sys = { type:'system', text:`${currentUser.name} left`, ts:Date.now() };
+    const sys = { type: 'system', text: `${currentUser.name} left`, ts: Date.now() };
     room.messages.push(sys);
     io.to(currentRoom).emit('system', sys);
-    io.to(currentRoom).emit('room-update', { count:room.users.size, users:[...room.users.values()] });
-    if (room.users.size === 0) delete rooms[currentRoom];
+    io.to(currentRoom).emit('room-update', { count: room.users.size, users: [...room.users.values()] });
+    if (room.users.size === 0) scheduleRoomDelete(currentRoom);
     console.log(`[-] ${currentUser.name} left #${currentRoom}`);
   });
 });
