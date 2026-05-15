@@ -82,6 +82,7 @@ node server.js
 2. Navigate to any room by entering a room name: `http://localhost:3000/your-room-name`
 3. Share the URL with others to join the same room
 4. Send text messages or upload images/videos — no login needed!
+5. No authentication required.
 
 ---
 
